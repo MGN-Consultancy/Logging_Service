@@ -1,4 +1,4 @@
-//Version 1.0.3 please change the code below to match the current version as this is used to determine updates
+//Version 1.0.3 - Ensure your current executable is named "audit_service_1.0.3.exe"
 // Notes
 
 // Required modules
@@ -29,9 +29,10 @@ function logError(message) {
 }
 
 // Versioning and self-update configuration using your repository URLs
-const currentVersion = "1.0.3"; // Ensure your current executable is named "audit_service_1.0.0.exe"
+const currentVersion = "1.0.3"; 
 const remoteVersionUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/logging_service/main/version.txt";
-const remoteExeUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/logging_service/main/audit_service_1.0.0.exe";
+// Updated remoteExeUrl to reflect current version
+const remoteExeUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/logging_service/main/audit_service_1.0.3.exe";
 
 // Define the base directory for storing files and logs
 const baseDir = 'C:\\program files\\Logging_Service';
@@ -134,8 +135,8 @@ async function checkForUpdate() {
     if (isVersionNewer(remoteVersion, currentVersion)) {
       logInfo("A newer version is available. Initiating update...");
 
-      // Define the new executable filename (e.g. audit_service_1.0.1.exe)
-      const newExeName = `listener_${remoteVersion}.exe`;
+      // Define the new executable filename using the audit_service prefix
+      const newExeName = `audit_service_${remoteVersion}.exe`;
       const newExePath = path.join(baseDir, newExeName);
       const tempExePath = newExePath + ".tmp";
 

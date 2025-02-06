@@ -1,3 +1,21 @@
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$SQLServer,
+    [Parameter(Mandatory=$true)]
+    [string]$SQLUser,
+    [Parameter(Mandatory=$true)]
+    [string]$SQLPass,
+    [Parameter(Mandatory=$true)]
+    [string]$ClientID,
+    [Parameter(Mandatory=$true)]
+    [string]$DBName,
+    [string]$Path
+)
+
+# Convert the SQLPass to a secure string and then to an encrypted string
+$securePass = ConvertTo-SecureString $SQLPass -AsPlainText -Force
+$encryptedPass = $securePass | ConvertFrom-SecureString
+
 # Define registry key, service name, and default installation directory
 $regKey = "HKLM:\SOFTWARE\audit_logging"
 $serviceName = "AuditLoggingService"
@@ -74,10 +92,14 @@ function Download-File {
     }
 }
 
-# Prompt for installation directory (default provided)
-$installDir = Read-Host "Enter installation directory for audit_service.exe (Default: $defaultInstallDir)"
-if ([string]::IsNullOrWhiteSpace($installDir)) {
-    $installDir = $defaultInstallDir
+# Prompt for installation directory if -Path not provided
+if (-not $Path) {
+    $installDir = Read-Host "Enter installation directory for audit_service.exe (Default: $defaultInstallDir)"
+    if ([string]::IsNullOrWhiteSpace($installDir)) {
+        $installDir = $defaultInstallDir
+    }
+} else {
+    $installDir = $Path
 }
 
 if (-not (Test-Path $installDir)) {
@@ -85,9 +107,9 @@ if (-not (Test-Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 }
 
-# Define the GitHub URL for listener.exe (your provided URL)
-$listenerUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/iam_agent/main/listener_1.0.0.exe"
-$listenerExePath = Join-Path $installDir "listener_1.0.0.exe"
+# Define the GitHub URL for audit_service.exe (your provided URL)
+$listenerUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/logging_service/main/audit_service_1.0.0.exe"
+$listenerExePath = Join-Path $installDir "audit_service_1.0.0.exe"
 
 # Download listener.exe to the chosen installation directory
 Download-File -Url $listenerUrl -Destination $listenerExePath
@@ -95,12 +117,14 @@ Download-File -Url $listenerUrl -Destination $listenerExePath
 # Function: Manage registry values
 function Manage-RegistryValues {
     $values = @(
-        @{ Name = "ns"; Prompt = "Enter value for your nameserver instance (e.g., namespace.servicebus.windows.net, no http://):" },
-        @{ Name = "path"; Prompt = "Enter value for endpoint (This matches your endpoint name):" },
-        @{ Name = "keyrule"; Prompt = "Enter value for keyrule (Usually 'default'):" },
-        @{ Name = "primarykey"; Prompt = "Enter value for primarykey (Obtained from your endpoint in Azure):" },
-        @{ Name = "secondarykey"; Prompt = "Enter value for secondarykey (Obtained from your endpoint in Azure):" }
+        @{ Name = "client_id"; Prompt = "Enter value for client_id (This should match the client_id in the IAM_portal):" },
+        @{ Name = "path"; Prompt = "Enter value for installation path:" },
+        @{ Name = "DB_SERVER"; Prompt = "Enter value for your SQL Server (obtained from Azure SQL'):" },
+        @{ Name = "DB_NAME"; Prompt = "Enter value for your Database Name (Obtained from Azure SQL):" },
+        @{ Name = "DB_USER"; Prompt = "Enter value for Database Username :" }
+        @{ Name = "DB_PASSPHRASE"; Prompt = "Enter value for Database Passphrase :" }
     )
+
 
     if (Test-Path $regKey) {
         Write-Host "Registry key '$regKey' exists."
@@ -157,21 +181,21 @@ function Manage-Service {
             # Set the working directory for the service
             & $nssmPath set $serviceName AppDirectory $installDir
             # Optionally redirect standard output and error to log files
-            & $nssmPath set $serviceName AppStdout (Join-Path $installDir "listener_stdout.log")
-            & $nssmPath set $serviceName AppStderr (Join-Path $installDir "listener_stderr.log")
+            & $nssmPath set $serviceName AppStdout (Join-Path $installDir "audit_stdout.log")
+            & $nssmPath set $serviceName AppStderr (Join-Path $installDir "audit_stderr.log")
             
             Write-Host "Starting service '$serviceName'..."
             Start-Service -Name $serviceName
             Write-Host "Service '$serviceName' has been registered and started successfully."
             return $true
         } else {
-            $runListener = Read-Host "Do you want to run listener.exe directly as an application? (y/n)"
+            $runListener = Read-Host "Do you want to run the audit_service directly as an application? (y/n)"
             if ($runListener -like "y") {
                 if (Test-Path $ListenerExePath) {
-                    Write-Host "Starting listener.exe directly..."
+                    Write-Host "Starting audit service directly..."
                     Start-Process -FilePath $ListenerExePath -NoNewWindow
                 } else {
-                    Write-Host "Error: listener.exe not found in the installation directory."
+                    Write-Host "Error: audit Service exe not found in the installation directory."
                     exit 1
                 }
             } else {
@@ -188,6 +212,24 @@ $registryUpdated = Manage-RegistryValues
 
 Write-Host "Managing service registration..."
 $serviceUpdated = Manage-Service -ListenerExePath $listenerExePath
+
+# Define the registry key path
+$regPath = "HKLM:\SOFTWARE\AuditService"
+
+# Create the registry key if it doesn't exist
+if (-not (Test-Path $regPath)) {
+    New-Item -Path $regPath -Force | Out-Null
+}
+
+# Write the registry values
+Set-ItemProperty -Path $regPath -Name "SQLServer" -Value $SQLServer
+Set-ItemProperty -Path $regPath -Name "SQLUser" -Value $SQLUser
+Set-ItemProperty -Path $regPath -Name "SQLPass" -Value $encryptedPass
+Set-ItemProperty -Path $regPath -Name "client_id" -Value $ClientID
+Set-ItemProperty -Path $regPath -Name "DB_NAME" -Value $DBName
+Set-ItemProperty -Path $regPath -Name "path" -Value $installDir
+
+Write-Output "Installation complete. Registry values are set."
 
 if (-not $registryUpdated -and -not $serviceUpdated) {
     Write-Host "No changes were made to registry values or the service. Exiting script."

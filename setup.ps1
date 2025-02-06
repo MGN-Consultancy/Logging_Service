@@ -9,7 +9,9 @@ param(
     [string]$ClientID,
     [Parameter(Mandatory=$false)]
     [string]$DBName,
-    [string]$Path
+    [string]$Path,
+    [Parameter(Mandatory=$false)]
+    [string]$SilentInstall = "no"
 )
 
 # Define registry key, service name, and default installation directory
@@ -145,7 +147,8 @@ function Manage-RegistryValues {
 # Function: Manage the service registration using NSSM
 function Manage-Service {
     param(
-         [string]$ListenerExePath
+         [string]$ListenerExePath,
+         [switch]$Silent  # New switch parameter
     )
     
     # Verify that the executable exists before proceeding
@@ -156,6 +159,10 @@ function Manage-Service {
     
     # Check if the service already exists
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+        if ($Silent) {
+            Write-Host "Service '$serviceName' already exists. Silent mode: skipping installation."
+            return $false
+        }
         Write-Host "Service '$serviceName' already exists."
         $uninstall = Read-Host "Do you want to uninstall the service? (y/n)"
         if ($uninstall -like "y") {
@@ -169,6 +176,16 @@ function Manage-Service {
             return $false
         }
     } else {
+        if ($Silent) {
+            Write-Host "Silent mode: Installing service '$serviceName'..."
+            & $nssmPath install $serviceName "`"$ListenerExePath`""
+            & $nssmPath set $serviceName AppDirectory $installDir
+            & $nssmPath set $serviceName AppStdout (Join-Path $installDir "audit_stdout.log")
+            & $nssmPath set $serviceName AppStderr (Join-Path $installDir "audit_stderr.log")
+            Start-Service -Name $serviceName
+            Write-Host "Service '$serviceName' installed and started silently."
+            return $true
+        }
         Write-Host "Service '$serviceName' does not exist."
         $install = Read-Host "Do you want to install the service? (y/n)"
         if ($install -like "y") {
@@ -200,6 +217,36 @@ function Manage-Service {
 
 # Main logic
 Write-Host "Checking registry values..."
+
+# Insert silent mode branch at the beginning of main logic
+if ($SilentInstall -eq "yes") {
+    Write-Host "Running in silent install mode."
+    if (-not ($SQLServer -and $SQLUser -and $SQLPass -and $ClientID -and $DBName -and $Path)) {
+         Write-Host "Error: Silent install requires all parameters (SQLServer, SQLUser, SQLPass, ClientID, DBName, Path)."
+         exit 1
+    }
+    $installDir = $Path
+
+    # Download file as usual
+    Download-File -Url $listenerUrl -Destination $listenerExePath
+
+    # Call Manage-Service in silent mode
+    $serviceUpdated = Manage-Service -ListenerExePath $listenerExePath -Silent
+
+    # Overwrite registry automatically
+    if (-not (Test-Path $regKey)) {
+         New-Item -Path $regKey -Force | Out-Null
+    }
+    Set-ItemProperty -Path $regKey -Name "SQLServer" -Value $SQLServer
+    Set-ItemProperty -Path $regKey -Name "SQLUser" -Value $SQLUser
+    Set-ItemProperty -Path $regKey -Name "SQLPass" -Value $SQLPass
+    Set-ItemProperty -Path $regKey -Name "client_id" -Value $ClientID
+    Set-ItemProperty -Path $regKey -Name "DB_NAME" -Value $DBName
+    Set-ItemProperty -Path $regKey -Name "path" -Value $installDir
+
+    Write-Output "Silent installation complete. Registry values are set."
+    exit 0
+}
 
 # If all parameters are provided, ask whether to use them or update via prompts.
 if ($SQLServer -and $SQLUser -and $SQLPass -and $ClientID -and $DBName -and $Path) {
@@ -260,7 +307,8 @@ Write-Output "Installation complete. Registry values are set."
 if (-not $userConfig -and -not $serviceUpdated) {
     Write-Host "No changes were made to registry values or the service. Exiting script."
     exit 0
+    pause
 }
 
 Write-Host "Script execution completed."
-Read-Host "Press Enter to exit"
+Read-Host -prompt "Press Enter to exit"

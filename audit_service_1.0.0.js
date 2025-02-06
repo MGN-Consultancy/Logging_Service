@@ -10,7 +10,6 @@ const Registry = require('winreg');
 const readline = require('readline');
 const { EventLogger } = require('node-windows');
 const mssql = require('mssql');
-const dpapi = require('win-dpapi');
 
 // Create an event logger instance
 const eventLogger = new EventLogger('Azure Audit Service');
@@ -197,14 +196,13 @@ async function loadSqlConfig() {
   }
 }
 
+
 function createSqlConfig({ SQLServer, SQLUser, SQLPass }) {
-  // Decrypt the SQLPass stored in the registry (encrypted via PowerShell's ConvertFrom-SecureString)
-  const decryptedBuffer = dpapi.unprotectData(Buffer.from(SQLPass, 'base64'), null, 'CurrentUser');
-  const decryptedPass = decryptedBuffer.toString('utf8');
+
   return {
     server: SQLServer,
     user: SQLUser,
-    password: decryptedPass,
+    password: SQLPass, 
     options: {
       encrypt: true
     }

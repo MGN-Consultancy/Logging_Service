@@ -12,10 +12,6 @@ param(
     [string]$Path
 )
 
-# Convert the SQLPass to a secure string and then to an encrypted string
-$securePass = ConvertTo-SecureString $SQLPass -AsPlainText -Force
-$encryptedPass = $securePass | ConvertFrom-SecureString
-
 # Define registry key, service name, and default installation directory
 $regKey = "HKLM:\SOFTWARE\audit_logging"
 $serviceName = "AuditLoggingService"
@@ -224,7 +220,7 @@ if (-not (Test-Path $regPath)) {
 # Write the registry values
 Set-ItemProperty -Path $regPath -Name "SQLServer" -Value $SQLServer
 Set-ItemProperty -Path $regPath -Name "SQLUser" -Value $SQLUser
-Set-ItemProperty -Path $regPath -Name "SQLPass" -Value $encryptedPass
+Set-ItemProperty -Path $regPath -Name "SQLPass" -Value $SQLPass
 Set-ItemProperty -Path $regPath -Name "client_id" -Value $ClientID
 Set-ItemProperty -Path $regPath -Name "DB_NAME" -Value $DBName
 Set-ItemProperty -Path $regPath -Name "path" -Value $installDir

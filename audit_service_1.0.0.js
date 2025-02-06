@@ -11,18 +11,21 @@ const readline = require('readline');
 const { EventLogger } = require('node-windows');
 const mssql = require('mssql');
 
+// Add a flag to enable/disable logging to the Windows Event Log.
+const enableEventLog = false; // Set to false to disable event log logging during development
+
 // Create an event logger instance
 const eventLogger = new EventLogger('Azure Audit Service');
 
 // Helper logging functions – these log to both the console and the Windows Event Log.
 function logInfo(message) {
   console.log(message);
-  eventLogger.info(message);
+  if (enableEventLog) eventLogger.info(message);
 }
 
 function logError(message) {
   console.error(message);
-  eventLogger.error(message);
+  if (enableEventLog) eventLogger.error(message);
 }
 
 // Versioning and self-update configuration using your repository URLs
@@ -39,9 +42,41 @@ if (!fs.existsSync(baseDir)) {
   logInfo(`Created base directory: ${baseDir}`);
 }
 
+// Define a logs directory inside baseDir and ensure it exists.
+const logsDir = path.join(baseDir, "logs");
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+  logInfo(`Created logs directory: ${logsDir}`);
+}
+
 // Define the service name and path to NSSM
 const serviceName = "AuditLoggingService";
 const nssmPath = "C:\\nssm\\win64\\nssm.exe";
+
+// Define constant for last scrape timestamp file.
+const lastScrapeFile = path.join(baseDir, "last_scrape_timestamp.txt");
+
+// Function to get the last scrape time. If not found, set to 7 days ago.
+function getLastScrapeTime() {
+  let lastScrape;
+  if (fs.existsSync(lastScrapeFile)) {
+    lastScrape = fs.readFileSync(lastScrapeFile, 'utf8').trim();
+    logInfo(`Last scrape timestamp found: ${lastScrape}`);
+  } else {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    lastScrape = sevenDaysAgo;
+    fs.writeFileSync(lastScrapeFile, lastScrape, 'utf8');
+    logInfo(`No last scrape timestamp found. Performing initial scrape over the past 7 days: ${lastScrape}`);
+  }
+  return lastScrape;
+}
+
+// Function to update the last scrape time to the current timestamp.
+function updateLastScrapeTime() {
+  const currentTimestamp = new Date().toISOString();
+  fs.writeFileSync(lastScrapeFile, currentTimestamp, 'utf8');
+  logInfo(`Updated last scrape timestamp to: ${currentTimestamp}`);
+}
 
 // ------------------------
 // Update Functions
@@ -183,7 +218,7 @@ function setRegistryValue(hive, keyPath, name, value) {
 
 async function loadSqlConfig() {
   const hive = Registry.HKLM;
-  const keyPath = '\\SOFTWARE\\AuditService';
+  const keyPath = '\\SOFTWARE\\auditservice';
   try {
     const SQLServer = await readRegistryValue(hive, keyPath, "SQLServer");
     const SQLUser = await readRegistryValue(hive, keyPath, "SQLUser");
@@ -196,31 +231,36 @@ async function loadSqlConfig() {
   }
 }
 
-
-function createSqlConfig({ SQLServer, SQLUser, SQLPass }) {
-
+// Updated createSqlConfig to include DB_NAME
+function createSqlConfig({ SQLServer, SQLUser, SQLPass, DB_NAME }) {
   return {
     server: SQLServer,
     user: SQLUser,
     password: SQLPass, 
+    database: DB_NAME,  // Include the database name from registry
     options: {
       encrypt: true
     }
   };
 }
 
-// Queries the SQL server for allowed event IDs for the given client.
+// Updated fetchEventIDsFromSQL with fully qualified table names:
 async function fetchEventIDsFromSQL(client_id, sqlConfig) {
   try {
+    logInfo("Connecting to SQL with config: " + JSON.stringify(sqlConfig));
     await mssql.connect(sqlConfig);
+    logInfo("SQL connection successful.");
     const request = new mssql.Request();
     request.input('clientID', mssql.NVarChar, client_id);
-    const result = await request.query(`
-      SELECT STRING_AGG(CAST(e.event_id AS NVARCHAR(50)), ',') AS eventIDs
-      FROM event_ids e
-      INNER JOIN event_ids_client_relationship r ON e.event_id = r.event_id
+    const query = `
+      SELECT STRING_AGG(CAST(e.id AS NVARCHAR(50)), ',') AS eventIDs
+      FROM dbo.event_ids e
+      INNER JOIN dbo.event_ids_client_relationship r ON e.id = r.event_id
       WHERE r.client_id = @clientID
-    `);
+    `;
+    logInfo("Executing SQL query: " + query);
+    const result = await request.query(query);
+    logInfo("SQL query executed successfully.");
     mssql.close();
     if (result.recordset.length && result.recordset[0].eventIDs) {
       return result.recordset[0].eventIDs;
@@ -228,6 +268,7 @@ async function fetchEventIDsFromSQL(client_id, sqlConfig) {
     return "";
   } catch (err) {
     mssql.close();
+    logError("Detailed SQL query error: " + JSON.stringify(err, null, 2));
     throw new Error("SQL query error: " + err.message);
   }
 }
@@ -270,47 +311,114 @@ function saveCachedEvents(events) {
   }
 }
 
-// Simulated function to scrape Windows event logs for provided event IDs.
-// In a real implementation, you might call "wevtutil" or a specialized module.
+// Updated scrapeEventLogs to query the SECURITY event logs using wevtutil instead of returning dummy data.
 async function scrapeEventLogs(eventIDs, lastScrapedTime) {
-  // For illustration, assume function returns an array of event objects.
-  // Each event has properties: event_id, event_name, event_username, event_ip,
-  // event_ext_ip, event_type, event_description, event_timestamp.
-  logInfo(`Scraping event logs for Event IDs: ${eventIDs}`);
-  // ...Replace with real log scraping logic...
-  // Dummy event example:
-  return [{
-    client_id: null, // will be set later
-    hostname: require('os').hostname(),
-    event_id: "1001",
-    event_name: "Test Event",
-    event_username: "user1",
-    event_ip: "192.168.1.10",
-    event_ext_ip: "8.8.8.8",
-    event_type: "Information",
-    event_description: "This is a test event from the event log.",
-    event_timestamp: new Date().toISOString(),
-    uploaded_timestamp: null
-  }];
+  logInfo(`Scraping logs for Event IDs: ${eventIDs} since ${lastScrapedTime}`);
+  
+  const { exec } = require('child_process');
+  const eventIDsArray = eventIDs.split(',').map(id => id.trim()).filter(Boolean);
+  const logNames = ["Security", "Application", "System", "Setup"];
+  let events = [];
+  
+  for (const logName of logNames) {
+    for (const id of eventIDsArray) {
+      const queryCmd = `wevtutil qe ${logName} /q:"*[System[EventID=${id} and TimeCreated[@SystemTime>='${lastScrapedTime}']]]" /f:xml /c:50`;
+      logInfo(`Running query on ${logName} log: ${queryCmd}`);
+      
+      try {
+        const stdout = await new Promise((resolve) => {
+          exec(queryCmd, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+            if (err) {
+              logError(`Error executing command for EventID ${id} in ${logName}: ${err.message}`);
+              return resolve('');
+            }
+            resolve(stdout);
+          });
+        });
+        
+        logInfo(`Raw output for EventID ${id} in ${logName}: ${stdout.substring(0,200)}...`);
+        
+        const eventBlocks = stdout.match(/<Event[\s\S]*?<\/Event>/gi);
+        if (eventBlocks) {
+          for (const block of eventBlocks) {
+            // Updated regex to capture the TimeCreated SystemTime attribute
+            const eventTimeRegex = /<TimeCreated[^>]*\sSystemTime=(?:"|')([^"']+)(?:"|')/i;
+            const eventTime = (block.match(eventTimeRegex) || [])[1] || '';
+            const eventID = (block.match(/<EventID>(\d+)<\/EventID>/i) || [])[1] || id;
+            const provider = (block.match(/<Provider\s+Name=["'][^"']+["']?/i) || [])[1] || logName;
+            // Updated regex to match both single and double quotes for TargetUserName
+            let username = (block.match(/<Data\s+Name=["']TargetUserName["']>([^<]+)<\/Data>/i) || [])[1] || '';
+            // Fallback to SubjectUserName if TargetUserName is empty
+            if (!username) {
+              username = (block.match(/<Data\s+Name=["']SubjectUserName["']>([^<]+)<\/Data>/i) || [])[1] || '';
+            }
+            // For event 4648, check for alternate account info
+            if (eventID === "4648") {
+              const alt = block.match(/Account\s+Name:\s*([\w@.\-]+)/i);
+              if (alt && alt[1]) {
+                username = alt[1];
+              }
+            }
+            // Filter out events with username SYSTEM (case-insensitive)
+            if (username && username.toLowerCase() === "system") {
+              logInfo(`Ignoring event with username SYSTEM. EventID: ${eventID} in ${logName}`);
+              continue;
+            }
+
+            events.push({
+              client_id: null, // will be set later
+              hostname: require('os').hostname(),
+              event_id: eventID,
+              event_name: provider,
+              event_username: username,
+              event_ip: "192.168.1.100",   // placeholder for local IP
+              event_ext_ip: "8.8.8.8",      // placeholder for public IP
+              event_type: "Information",   // placeholder
+              event_description: block,    // use full XML as description
+              event_timestamp: eventTime,
+              uploaded_timestamp: null
+            });
+          }
+        } else {
+          logInfo(`No events found for EventID ${id} in ${logName}`);
+        }
+      } catch (e) {
+        logError(`Exception while processing EventID ${id} in ${logName}: ${e.message}`);
+      }
+    }
+  }
+  return events;
 }
 
 // Uploads events to the SQL table local_audit_logs.
 async function uploadEventsToSQL(client_id, sqlConfig, events) {
-  if (!events.length) return;
+  if (!events.length) return true;
   try {
     await mssql.connect(sqlConfig);
     const transaction = new mssql.Transaction();
     await transaction.begin();
-    const request = new mssql.Request(transaction);
     for (const ev of events) {
-      // Ensure each event contains client_id and hostname etc.
       ev.client_id = client_id;
       ev.uploaded_timestamp = new Date();
+      const request = new mssql.Request(transaction);
+      // Use parameterized query to prevent issues with special characters.
+      request.input('client_id', mssql.NVarChar, ev.client_id);
+      request.input('hostname', mssql.NVarChar, ev.hostname);
+      request.input('event_id', mssql.NVarChar, ev.event_id);
+      request.input('event_name', mssql.NVarChar, ev.event_name);
+      request.input('event_username', mssql.NVarChar, ev.event_username);
+      // Updated parameter: send local IP as event_internal_ip
+      request.input('event_internal_ip', mssql.NVarChar, ev.event_ip);
+      request.input('event_ext_ip', mssql.NVarChar, ev.event_ext_ip);
+      request.input('event_type', mssql.NVarChar, ev.event_type);
+      request.input('event_description', mssql.NVarChar, ev.event_description);
+      request.input('event_timestamp', mssql.DateTime, new Date(ev.event_timestamp));
+      request.input('uploaded_timestamp', mssql.DateTime, ev.uploaded_timestamp);
       await request.query(`
-        INSERT INTO local_audit_logs (client_id, hostname, event_id, event_name, event_username, event_ip, event_ext_ip, event_type, event_description, event_timestamp, uploaded_timestamp)
-        VALUES (
-          '${ev.client_id}', '${ev.hostname}', '${ev.event_id}', '${ev.event_name}', '${ev.event_username}', '${ev.event_ip}', '${ev.event_ext_ip}', '${ev.event_type}', '${ev.event_description}', '${ev.event_timestamp}', '${ev.uploaded_timestamp}'
-        )
+        INSERT INTO local_audit_logs 
+        (client_id, hostname, event_id, event_name, event_username, event_internal_ip, event_ext_ip, event_type, event_description, event_timestamp, uploaded_timestamp)
+        VALUES 
+        (@client_id, @hostname, @event_id, @event_name, @event_username, @event_internal_ip, @event_ext_ip, @event_type, @event_description, @event_timestamp, @uploaded_timestamp)
       `);
     }
     await transaction.commit();
@@ -321,6 +429,110 @@ async function uploadEventsToSQL(client_id, sqlConfig, events) {
     mssql.close();
     logError("Error uploading events to SQL: " + err.message);
     return false;
+  }
+}
+
+// Add a simple function to test SQL connectivity.
+async function testSqlConnection(sqlConfig) {
+  try {
+    logInfo("Testing SQL connection...");
+    await mssql.connect(sqlConfig);
+    const result = await new mssql.Request().query("SELECT 1 AS connected");
+    if (result.recordset && result.recordset[0] && result.recordset[0].connected === 1) {
+      logInfo("SQL connection test succeeded.");
+      mssql.close();
+      return true;
+    }
+    mssql.close();
+    logError("SQL connection test did not return expected result.");
+    return false;
+  } catch (err) {
+    mssql.close();
+    logError("SQL connection test error: " + err.message);
+    return false;
+  }
+}
+
+// Add a function to retrieve client info from the clients table.
+async function getClientInfo(id, sqlConfig) {
+  try {
+    await mssql.connect(sqlConfig);
+    const request = new mssql.Request();
+    request.input('clientID', mssql.NVarChar, id);
+    const query = `SELECT * FROM dbo.clients WHERE id = @clientID`;
+    logInfo("Executing client info query: " + query);
+    const result = await request.query(query);
+    mssql.close();
+    return result.recordset;
+  } catch (err) {
+    mssql.close();
+    logError("Error retrieving client info: " + err.message);
+    return null;
+  }
+}
+
+// Add helper function to get the internal IP address.
+function getInternalIP() {
+  const interfaces = require('os').networkInterfaces();
+  for (const iface of Object.values(interfaces)) {
+    for (const details of iface) {
+      if (details.family === 'IPv4' && !details.internal) {
+        return details.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
+
+// Add helper function to get the public IP address.
+function getPublicIP() {
+  return new Promise((resolve, reject) => {
+    nodeHttps.get('https://api.ipify.org?format=json', res => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          resolve(parsed.ip || '0.0.0.0');
+        } catch (e) {
+          resolve('0.0.0.0');
+        }
+      });
+    }).on('error', err => {
+      resolve('0.0.0.0');
+    });
+  });
+}
+
+// NEW: Load event descriptions from the event_ids table, with fallback to local cache.
+async function loadEventDescriptions(sqlConfig) {
+  const cacheFile = path.join(baseDir, "event_descriptions_cache.json");
+  try {
+    await mssql.connect(sqlConfig);
+    const result = await new mssql.Request().query("SELECT id, event_id_description FROM dbo.event_ids");
+    mssql.close();
+    const mapping = {};
+    if (result.recordset && result.recordset.length) {
+      result.recordset.forEach(row => {
+        mapping[row.id.toString()] = row.event_id_description;
+      });
+      // Update local cache file with the latest mapping.
+      fs.writeFileSync(cacheFile, JSON.stringify(mapping, null, 2), 'utf8');
+    }
+    return mapping;
+  } catch (err) {
+    mssql.close();
+    logError("Error loading event descriptions from SQL: " + err.message);
+    // Attempt to load from local cache file if SQL retrieval fails.
+    try {
+      if (fs.existsSync(cacheFile)) {
+        const data = fs.readFileSync(cacheFile, 'utf8');
+        return JSON.parse(data);
+      }
+    } catch (cacheErr) {
+      logError("Error loading event descriptions from local cache: " + cacheErr.message);
+    }
+    return {};
   }
 }
 
@@ -336,6 +548,24 @@ async function uploadEventsToSQL(client_id, sqlConfig, events) {
     const sqlSettings = await loadSqlConfig();
     client_id = sqlSettings.client_id;
     sqlConfig = createSqlConfig(sqlSettings);
+    console.log(sqlConfig, client_id);
+
+    // Test connection before proceeding.
+    const isConnected = await testSqlConnection(sqlConfig);
+    if (!isConnected) {
+      logError("SQL connectivity test failed. Aborting further SQL operations.");
+      // Optionally exit or continue with cached data.
+    }
+
+    // Retrieve client info and write to log file in the logs folder.
+    const clientInfo = await getClientInfo(client_id, sqlConfig);
+    if (clientInfo) {
+      const logFile = path.join(logsDir, "client_info.log");
+      fs.writeFileSync(logFile, JSON.stringify(clientInfo, null, 2));
+      logInfo(`Client info logged to ${logFile}`);
+    } else {
+      logError("No client info found or error occurred.");
+    }
 
     // Attempt to fetch allowed event IDs from SQL.
     allowedEventIDs = await fetchEventIDsFromSQL(client_id, sqlConfig);
@@ -349,8 +579,8 @@ async function uploadEventsToSQL(client_id, sqlConfig, events) {
       allowedEventIDs = await readRegistryValue(Registry.HKLM, '\\SOFTWARE\\AuditService', "event_ids");
       logInfo(`Using cached event IDs: ${allowedEventIDs}`);
     } catch (regErr) {
-      logError("No cached event IDs available. Exiting service startup.");
-      process.exit(1);
+      logError("No cached event IDs available. Defaulting to empty eventIDs.");
+      allowedEventIDs = ""; 
     }
   }
 
@@ -363,23 +593,68 @@ async function uploadEventsToSQL(client_id, sqlConfig, events) {
   // Function to process event scraping and SQL upload.
   async function processEvents() {
     try {
-      let events = await scrapeEventLogs(allowedEventIDs, lastScrapedTime);
-      // Update last scraped time.
-      lastScrapedTime = new Date().toISOString();
-      // Merge newly scraped events with any cached events.
-      events = cachedEvents.concat(events);
-      // Remove potential duplicates (you can improve the logic using event IDs/timestamps).
-      const uniqueEvents = Array.from(new Map(events.map(ev => [ev.event_timestamp + ev.event_id, ev])).values());
-      // Attempt upload to SQL.
+      const scrapeStartTime = getLastScrapeTime();
+      logInfo(`Performing scrape for client_id ${client_id} for Event IDs ${allowedEventIDs} from ${scrapeStartTime}`);
+      
+      // Update allowed event IDs on each scrape
+      try {
+        allowedEventIDs = await fetchEventIDsFromSQL(client_id, sqlConfig);
+        await updateRegistryEventIDs(allowedEventIDs);
+        logInfo(`Allowed Event IDs updated to: ${allowedEventIDs}`);
+      } catch (err) {
+        logError("Failed updating allowed Event IDs: " + err.message);
+      }
+      
+      let events = await scrapeEventLogs(allowedEventIDs, scrapeStartTime);
+      
+      // Set client_id for each event.
+      events.forEach(ev => { ev.client_id = client_id; });
+      
+      // Obtain current IP addresses.
+      const internalIP = getInternalIP();
+      const publicIP = await getPublicIP();
+      events.forEach(ev => {
+        ev.event_ip = internalIP;
+        ev.event_ext_ip = publicIP;
+      });
+      
+      // Update local scrape timestamp.
+      updateLastScrapeTime();
+      
+      // Merge with any previously cached events and de-duplicate events.
+      let cached = loadCachedEvents();
+      events = cached.concat(events);
+      const uniqueEvents = Array.from(new Map(
+        events.map(ev => {
+          const ts = ev.event_timestamp;
+          const truncatedTime = ts.includes('.') ? ts.split('.')[0] : ts;
+          return [truncatedTime + ev.event_id, ev];
+        })
+      ).values());
+      
+      // Replace long description with event_id_description from SQL mapping.
+      const eventDescMapping = await loadEventDescriptions(sqlConfig);
+      uniqueEvents.forEach(ev => {
+        if (eventDescMapping[ev.event_id]) {
+          ev.event_description = eventDescMapping[ev.event_id];
+        }
+      });
+      
+      // Log each event for diagnostics.
+      uniqueEvents.forEach(ev => {
+        logInfo(`Prepared event: ${JSON.stringify(ev)}`);
+      });
+      
+      // Immediately attempt to upload events to SQL.
       const uploadSuccess = await uploadEventsToSQL(client_id, sqlConfig, uniqueEvents);
       if (uploadSuccess) {
-        // Clear cache if uploaded successfully.
-        cachedEvents = [];
-        saveCachedEvents(cachedEvents);
+        // Clear local cache if data is successfully written.
+        saveCachedEvents([]);
+        logInfo("SQL upload successful. Cleared local cache.");
       } else {
-        // Failed to upload; cache the events.
-        cachedEvents = uniqueEvents;
-        saveCachedEvents(cachedEvents);
+        // Cache the events if upload failed.
+        saveCachedEvents(uniqueEvents);
+        logError("SQL upload failed. Cached events retained for next attempt.");
       }
     } catch (err) {
       logError("Error during event processing: " + err.message);
@@ -399,10 +674,23 @@ async function uploadEventsToSQL(client_id, sqlConfig, events) {
   // Set an interval to run event scraping every 5 minutes.
   setInterval(processEvents, 5 * 60 * 1000);
 
+  // Call processEvents once immediately to verify that events are written.
+  processEvents();
+
   // Handle termination signals gracefully.
   process.on('SIGTERM', () => {
     logInfo('Received SIGTERM, shutting down gracefully...');
     process.exit(0);
+  });
+
+  // Add global error handlers for better diagnostics
+  process.on('uncaughtException', (err) => {
+    logError("Uncaught Exception: " + err.stack);
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason, promise) => {
+    logError("Unhandled Rejection at: " + promise + ", reason: " + reason);
+    process.exit(1);
   });
 
 })();

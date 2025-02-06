@@ -10,6 +10,7 @@ const Registry = require('winreg');
 const readline = require('readline');
 const { EventLogger } = require('node-windows');
 const mssql = require('mssql');
+const dpapi = require('win-dpapi');
 
 // Create an event logger instance
 const eventLogger = new EventLogger('Azure Audit Service');
@@ -179,7 +180,8 @@ function setRegistryValue(hive, keyPath, name, value) {
   });
 }
 
-// Load SQL configuration from registry (assumes keys are stored under HKLM:\SOFTWARE\AuditService)
+// Updated Registry & SQL Functions
+
 async function loadSqlConfig() {
   const hive = Registry.HKLM;
   const keyPath = '\\SOFTWARE\\AuditService';
@@ -188,18 +190,21 @@ async function loadSqlConfig() {
     const SQLUser = await readRegistryValue(hive, keyPath, "SQLUser");
     const SQLPass = await readRegistryValue(hive, keyPath, "SQLPass");
     const client_id = await readRegistryValue(hive, keyPath, "client_id");
-    return { SQLServer, SQLUser, SQLPass, client_id };
+    const DB_NAME = await readRegistryValue(hive, keyPath, "DB_NAME");
+    return { SQLServer, SQLUser, SQLPass, client_id, DB_NAME };
   } catch (err) {
     throw new Error("Failed to load SQL configuration from registry: " + err.message);
   }
 }
 
-// Create SQL connection configuration for mssql
 function createSqlConfig({ SQLServer, SQLUser, SQLPass }) {
+  // Decrypt the SQLPass stored in the registry (encrypted via PowerShell's ConvertFrom-SecureString)
+  const decryptedBuffer = dpapi.unprotectData(Buffer.from(SQLPass, 'base64'), null, 'CurrentUser');
+  const decryptedPass = decryptedBuffer.toString('utf8');
   return {
     server: SQLServer,
     user: SQLUser,
-    password: SQLPass,
+    password: decryptedPass,
     options: {
       encrypt: true
     }

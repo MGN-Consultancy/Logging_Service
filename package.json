@@ -1,8 +1,8 @@
 {
-  "name": "azure-onpremise-node",
+  "name": "audit_service",
   "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
+    "scripts": {
+    "build": "pkg . --output audit_service.exe",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -18,6 +18,11 @@
     "pkg": "^5.8.1",
     "readline": "^1.3.0",
     "winreg": "^1.2.5"
+  },
+  "pkg": {
+    "targets": [
+      "node16-win-x64"
+    ]
   },
   "description": ""
 }

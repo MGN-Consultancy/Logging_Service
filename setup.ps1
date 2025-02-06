@@ -1,10 +1,10 @@
 # Define registry key, service name, and default installation directory
-$regKey = "HKLM:\SOFTWARE\iam_automation"
-$serviceName = "AzureRelayListener"
-$defaultInstallDir = "C:\program files\iam_agent"
+$regKey = "HKLM:\SOFTWARE\audit_logging"
+$serviceName = "AuditLoggingService"
+$defaultInstallDir = "C:\program files\logging_service"
 
 # Define NSSM installation folder and path to NSSM executable
-$NssmInstallFolder = "C:\nssm"
+$NssmInstallFolder = "C:\program files\nssm"
 $nssmPath = Join-Path $NssmInstallFolder "win64\nssm.exe"
 
 # Function: Install-NSSM if not already present
@@ -75,7 +75,7 @@ function Download-File {
 }
 
 # Prompt for installation directory (default provided)
-$installDir = Read-Host "Enter installation directory for listener.exe (Default: $defaultInstallDir)"
+$installDir = Read-Host "Enter installation directory for audit_service.exe (Default: $defaultInstallDir)"
 if ([string]::IsNullOrWhiteSpace($installDir)) {
     $installDir = $defaultInstallDir
 }

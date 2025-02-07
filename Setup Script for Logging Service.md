@@ -33,7 +33,11 @@ DENY VIEW ANY TABLE TO [automation_user];
 ## Example Script Usage
 
 ```powershell
-.\setup.ps1 -SQLServer "localhost" -SQLUser "admin" -SQLPass "password" -ClientID "12345" -DBName "LoggingDB" -Path "C:\InstallPath" -SilentInstall "yes" -SilentUninstall "no"
+.\logging_service_install.ps1 -SQLServer "localhost" -SQLUser "admin" -SQLPass "password" -ClientID "12345" -DBName "LoggingDB" -Path "C:\InstallPath" -SilentInstall "yes" -SilentUninstall "no"
+
+## Example Script Usage This will uninstall the software via ninja. 
+
+.\logging_service_install.ps1  -SilentUninstall "yes"
 
 For an interactive installation simply run .\setup.ps1 as administrator and it will prompt you for entries.
 

@@ -236,7 +236,10 @@ function Manage-Service {
             & $nssmPath set $serviceName AppStdout (Join-Path $appDirectory "audit_stdout.log")
             & $nssmPath set $serviceName AppStderr (Join-Path $appDirectory "audit_stderr.log")
             Start-Service -Name $serviceName
-            Write-Host "Service '$serviceName' installed and started silently."
+            Start-Sleep -Seconds 5
+            Write-Host "Service Restarting to apply changes"
+            Restart-Service -Name $serviceName
+            Write-Host "Service '$serviceName' has been registered and restarted successfully."
             return $true
         } else {
             $runListener = Read-Host "Do you want to run the audit_service directly as an application? (y/n)"
@@ -250,7 +253,11 @@ function Manage-Service {
                 & $nssmPath set $serviceName AppStderr (Join-Path $installDir "audit_stderr.log")
                 Write-Host "Starting service '$serviceName'..."
                 Start-Service -Name $serviceName
-                Write-Host "Service '$serviceName' has been registered and started successfully."
+                Start-Sleep -Seconds 5
+                Write-Host "Service Restarting to apply changes"
+                Restart-Service -Name $serviceName
+                Write-Host "Service '$serviceName' has been registered and restarted successfully."
+               
             }
             return $true
         }
@@ -272,19 +279,18 @@ if ($SilentInstall -eq "yes") {
     # Download file as usual
     Download-File -Url $listenerUrl -Destination $listenerExePath
 
-    # Call Manage-Service in silent mode
-    $serviceUpdated = Manage-Service -ListenerExePath $listenerExePath -Silent
-
-    # Overwrite registry automatically
-    if (-not (Test-Path $regKey)) {
-         New-Item -Path $regKey -Force | Out-Null
-    }
+    # --- Moved registry updates before service registration ---
+    if (-not (Test-Path $regKey)) { New-Item -Path $regKey -Force | Out-Null }
     Set-ItemProperty -Path $regKey -Name "SQLServer" -Value $SQLServer
     Set-ItemProperty -Path $regKey -Name "SQLUser" -Value $SQLUser
     Set-ItemProperty -Path $regKey -Name "SQLPass" -Value $SQLPass
     Set-ItemProperty -Path $regKey -Name "client_id" -Value $ClientID
     Set-ItemProperty -Path $regKey -Name "DB_NAME" -Value $DBName
     Set-ItemProperty -Path $regKey -Name "path" -Value $installDir
+    # --- End registry update modifications ---
+
+    # Now register and start the service
+    $serviceUpdated = Manage-Service -ListenerExePath $listenerExePath -Silent
 
     Write-Output "Silent installation complete. Registry values are set."
     exit 0
@@ -320,6 +326,16 @@ else {
     }
 }
 
+# --- Ensure registry values are updated before service registration ---
+if (-not (Test-Path $regKey)) { New-Item -Path $regKey -Force | Out-Null }
+Set-ItemProperty -Path $regKey -Name "SQLServer" -Value $SQLServer
+Set-ItemProperty -Path $regKey -Name "SQLUser" -Value $SQLUser
+Set-ItemProperty -Path $regKey -Name "SQLPass" -Value $SQLPass
+Set-ItemProperty -Path $regKey -Name "client_id" -Value $ClientID
+Set-ItemProperty -Path $regKey -Name "DB_NAME" -Value $DBName
+Set-ItemProperty -Path $regKey -Name "path" -Value $installDir
+# --- End registry update modifications ---
+
 Write-Host "Managing service registration..."
 $serviceUpdated = Manage-Service -ListenerExePath $listenerExePath
 
@@ -353,4 +369,5 @@ if (-not $userConfig -and -not $serviceUpdated) {
 }
 
 Write-Host "Script execution completed."
+
 Read-Host -prompt "Press Enter to exit"

@@ -649,6 +649,14 @@ async function loadEventDescriptions(sqlConfig) {
         logInfo(`Prepared event: ${JSON.stringify(ev)}`);
       });
       
+      // New: Check SQL connectivity before attempting upload.
+      const canConnect = await testSqlConnection(sqlConfig);
+      if (!canConnect) {
+        logError("SQL connection test failed during event processing. Caching events for next attempt.");
+        saveCachedEvents(uniqueEvents);
+        return;
+      }
+      
       // Immediately attempt to upload events to SQL.
       const uploadSuccess = await uploadEventsToSQL(client_id, sqlConfig, uniqueEvents);
       if (uploadSuccess) {

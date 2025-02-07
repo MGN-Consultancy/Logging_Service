@@ -238,22 +238,21 @@ function Manage-Service {
             Start-Service -Name $serviceName
             Write-Host "Service '$serviceName' installed and started silently."
             return $true
-        }
-            & $nssmPath set $serviceName AppStderr (Join-Path $installDir "audit_stderr.log")
-            
-            Write-Host "Starting service '$serviceName'..."
-            Start-Service -Name $serviceName
-            Write-Host "Service '$serviceName' has been registered and started successfully."
-            return $true
         } else {
             $runListener = Read-Host "Do you want to run the audit_service directly as an application? (y/n)"
             if ($runListener -like "y") {
                 Write-Host "Starting audit service directly..."
                 Start-Process -FilePath $ListenerExePath -NoNewWindow
             } else {
-                Write-Host "Exiting script without making changes."
-                exit 0
+                & $nssmPath install $serviceName "`"$ListenerExePath`""
+                & $nssmPath set $serviceName AppDirectory $appDirectory
+                & $nssmPath set $serviceName AppStdout (Join-Path $appDirectory "audit_stdout.log")
+                & $nssmPath set $serviceName AppStderr (Join-Path $installDir "audit_stderr.log")
+                Write-Host "Starting service '$serviceName'..."
+                Start-Service -Name $serviceName
+                Write-Host "Service '$serviceName' has been registered and started successfully."
             }
+            return $true
         }
     }
 }

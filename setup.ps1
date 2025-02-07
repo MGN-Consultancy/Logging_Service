@@ -11,7 +11,9 @@ param(
     [string]$DBName,
     [string]$Path,
     [Parameter(Mandatory=$false)]
-    [string]$SilentInstall = "no"
+    [string]$SilentInstall = "no",
+    [Parameter(Mandatory=$false)]
+    [string]$SilentUninstall = "no"  # New parameter for silent uninstall
 )
 
 # Define registry key, service name, and default installation directory
@@ -22,6 +24,51 @@ $defaultInstallDir = "C:\program files\logging_service"
 # Define NSSM installation folder and path to NSSM executable
 $NssmInstallFolder = "C:\program files\nssm"
 $nssmPath = Join-Path $NssmInstallFolder "win64\nssm.exe"
+
+# NEW: Set installation directory and listener variables up front
+if (-not $Path) { 
+    $installDir = $defaultInstallDir 
+} else { 
+    $installDir = $Path 
+}
+$listenerUrl = "https://raw.githubusercontent.com/MGN-Consultancy/Logging_Service/main/audit_service_1.0.0.exe"
+$listenerExePath = Join-Path $installDir "audit_service_1.0.0.exe"
+
+# Early check for silent uninstallation
+if ($SilentUninstall -eq "yes") {
+    Write-Host "Running silent uninstallation..."
+    # Stop and remove the service if it exists
+    $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($existingService) {
+        Write-Host "Stopping and removing service '$serviceName'..."
+        Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+        & $nssmPath remove $serviceName confirm
+    }
+    else {
+        Write-Host "Service '$serviceName' not found."
+    }
+    # Remove the registry key if it exists
+    if (Test-Path $regKey) {
+        Write-Host "Removing registry key $regKey..."
+        Remove-Item -Path $regKey -Recurse -Force
+    }
+    else {
+        Write-Host "Registry key $regKey not found."
+    }
+    # Determine installation directory
+    $uninstallDir = $Path
+    if (-not $uninstallDir) { $uninstallDir = $defaultInstallDir }
+    # Remove the installation directory if it exists
+    if (Test-Path $uninstallDir) {
+        Write-Host "Removing installation directory $uninstallDir..."
+        Remove-Item -Path $uninstallDir -Recurse -Force
+    }
+    else {
+        Write-Host "Installation directory $uninstallDir not found."
+    }
+    Write-Output "Silent uninstallation complete."
+    exit 0
+}
 
 # Function: Install-NSSM if not already present
 function Install-NSSM {
@@ -104,10 +151,6 @@ if (-not (Test-Path $installDir)) {
     Write-Host "Creating installation directory: $installDir"
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 }
-
-# Define the GitHub URL for audit_service.exe (your provided URL)
-$listenerUrl = "https://github.com/MGN-Consultancy/Logging_Service/blob/bd3fe4027889ab2339aace64260753a324ce99ee/audit_service_1.0.0.exe"
-$listenerExePath = Join-Path $installDir "audit_service_1.0.0.exe"
 
 # Download listener.exe to the chosen installation directory
 Download-File -Url $listenerUrl -Destination $listenerExePath
@@ -218,7 +261,7 @@ function Manage-Service {
 # Main logic
 Write-Host "Checking registry values..."
 
-# Insert silent mode branch at the beginning of main logic
+# Silent Mode Branch
 if ($SilentInstall -eq "yes") {
     Write-Host "Running in silent install mode."
     if (-not ($SQLServer -and $SQLUser -and $SQLPass -and $ClientID -and $DBName -and $Path)) {

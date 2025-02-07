@@ -200,6 +200,15 @@ function Manage-Service {
         exit 1
     }
     
+    # Determine the working directory from registry if available
+    $appDirectory = $installDir
+    if (Test-Path $regKey) {
+        $regPathValue = (Get-ItemProperty -Path $regKey -Name "path" -ErrorAction SilentlyContinue).path
+        if ($regPathValue) {
+            $appDirectory = $regPathValue
+        }
+    }
+    
     # Check if the service already exists
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         if ($Silent) {
@@ -218,27 +227,18 @@ function Manage-Service {
             Write-Host "Service will remain installed. No changes made."
             return $false
         }
-    } else {
+    } 
+    else {
         if ($Silent) {
             Write-Host "Silent mode: Installing service '$serviceName'..."
             & $nssmPath install $serviceName "`"$ListenerExePath`""
-            & $nssmPath set $serviceName AppDirectory $installDir
-            & $nssmPath set $serviceName AppStdout (Join-Path $installDir "audit_stdout.log")
-            & $nssmPath set $serviceName AppStderr (Join-Path $installDir "audit_stderr.log")
+            & $nssmPath set $serviceName AppDirectory $appDirectory
+            & $nssmPath set $serviceName AppStdout (Join-Path $appDirectory "audit_stdout.log")
+            & $nssmPath set $serviceName AppStderr (Join-Path $appDirectory "audit_stderr.log")
             Start-Service -Name $serviceName
             Write-Host "Service '$serviceName' installed and started silently."
             return $true
         }
-        Write-Host "Service '$serviceName' does not exist."
-        $install = Read-Host "Do you want to install the service? (y/n)"
-        if ($install -like "y") {
-            Write-Host "Registering '$ListenerExePath' as a service using NSSM..."
-            # Wrap the executable path in quotes for safety
-            & $nssmPath install $serviceName "`"$ListenerExePath`""
-            # Set the working directory for the service
-            & $nssmPath set $serviceName AppDirectory $installDir
-            # Optionally redirect standard output and error to log files
-            & $nssmPath set $serviceName AppStdout (Join-Path $installDir "audit_stdout.log")
             & $nssmPath set $serviceName AppStderr (Join-Path $installDir "audit_stderr.log")
             
             Write-Host "Starting service '$serviceName'..."

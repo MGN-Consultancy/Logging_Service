@@ -106,7 +106,7 @@ if (-not (Test-Path $installDir)) {
 }
 
 # Define the GitHub URL for audit_service.exe (your provided URL)
-$listenerUrl = "https://github.com/MGN-Consultancy/Logging_Service/blob/bd3fe4027889ab2339aace64260753a324ce99ee/audit_service_1.0.0.exe"
+$listenerUrl = "https://raw.githubusercontent.com/MGN-Consultancy/Logging_Service/main/audit_service_1.0.0.exe"
 $listenerExePath = Join-Path $installDir "audit_service_1.0.0.exe"
 
 # Download listener.exe to the chosen installation directory

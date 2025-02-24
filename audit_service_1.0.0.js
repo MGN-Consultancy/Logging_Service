@@ -34,28 +34,32 @@ const remoteVersionUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/logg
 // Updated remoteExeUrl to reflect current version
 const remoteExeUrl = "https://raw.githubusercontent.com/nigelwebsterMGN/logging_service/main/audit_service_1.0.3.exe";
 
-// Define the base directory for storing files and logs
-const baseDir = 'C:\\program files\\Logging_Service';
+// Replace hardcoded baseDir and its dependents with mutable globals
+let baseDir = 'C:\\program files\\Logging_Service'; // default fallback
+let logsDir; 
+let lastScrapeFile;
+let cacheFile;
 
-// Ensure the base directory exists
-if (!fs.existsSync(baseDir)) {
-  fs.mkdirSync(baseDir, { recursive: true });
-  logInfo(`Created base directory: ${baseDir}`);
-}
-
-// Define a logs directory inside baseDir and ensure it exists.
-const logsDir = path.join(baseDir, "logs");
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-  logInfo(`Created logs directory: ${logsDir}`);
+// Modify loadSqlConfig to also load the installation path from registry
+async function loadSqlConfig() {
+  const hive = Registry.HKLM;
+  const keyPath = '\\SOFTWARE\\auditservice';
+  try {
+    const SQLServer = await readRegistryValue(hive, keyPath, "SQLServer");
+    const SQLUser = await readRegistryValue(hive, keyPath, "SQLUser");
+    const SQLPass = await readRegistryValue(hive, keyPath, "SQLPass");
+    const client_id = await readRegistryValue(hive, keyPath, "client_id");
+    const DB_NAME = await readRegistryValue(hive, keyPath, "DB_NAME");
+    const installPath = await readRegistryValue(hive, keyPath, "path");
+    return { SQLServer, SQLUser, SQLPass, client_id, DB_NAME, installPath };
+  } catch (err) {
+    throw new Error("Failed to load SQL configuration from registry: " + err.message);
+  }
 }
 
 // Define the service name and path to NSSM
 const serviceName = "AuditLoggingService";
 const nssmPath = "C:\\nssm\\win64\\nssm.exe";
-
-// Define constant for last scrape timestamp file.
-const lastScrapeFile = path.join(baseDir, "last_scrape_timestamp.txt");
 
 // Function to get the last scrape time. If not found, set to 7 days ago.
 function getLastScrapeTime() {
@@ -217,30 +221,16 @@ function setRegistryValue(hive, keyPath, name, value) {
 
 // Updated Registry & SQL Functions
 
-async function loadSqlConfig() {
-  const hive = Registry.HKLM;
-  const keyPath = '\\SOFTWARE\\auditservice';
-  try {
-    const SQLServer = await readRegistryValue(hive, keyPath, "SQLServer");
-    const SQLUser = await readRegistryValue(hive, keyPath, "SQLUser");
-    const SQLPass = await readRegistryValue(hive, keyPath, "SQLPass");
-    const client_id = await readRegistryValue(hive, keyPath, "client_id");
-    const DB_NAME = await readRegistryValue(hive, keyPath, "DB_NAME");
-    return { SQLServer, SQLUser, SQLPass, client_id, DB_NAME };
-  } catch (err) {
-    throw new Error("Failed to load SQL configuration from registry: " + err.message);
-  }
-}
-
 // Updated createSqlConfig to include DB_NAME
 function createSqlConfig({ SQLServer, SQLUser, SQLPass, DB_NAME }) {
   return {
     server: SQLServer,
     user: SQLUser,
     password: SQLPass, 
-    database: DB_NAME,  // Include the database name from registry
+    database: DB_NAME,
     options: {
-      encrypt: true
+      encrypt: true,
+      trustServerCertificate: true,
     }
   };
 }
@@ -287,8 +277,6 @@ async function updateRegistryEventIDs(eventIDs) {
 // ------------------------
 // Event Log Scraping & Caching
 // ------------------------
-
-const cacheFile = path.join(baseDir, "cached_events.json");
 
 // Loads any cached events from disk.
 function loadCachedEvents() {
@@ -545,11 +533,26 @@ async function loadEventDescriptions(sqlConfig) {
 
   let sqlConfig, client_id, allowedEventIDs;
   try {
-    // Read SQL connection parameters and client_id from registry.
+    // Load SQL settings (including install path) from registry.
     const sqlSettings = await loadSqlConfig();
     client_id = sqlSettings.client_id;
     sqlConfig = createSqlConfig(sqlSettings);
-    console.log(sqlConfig, client_id);
+
+    // Update baseDir and derived paths from registry value.
+    baseDir = sqlSettings.installPath || baseDir;
+    logsDir = path.join(baseDir, "logs");
+    lastScrapeFile = path.join(baseDir, "last_scrape_timestamp.txt");
+    cacheFile = path.join(baseDir, "cached_events.json");
+
+    // Ensure base and logs directories exist.
+    if (!fs.existsSync(baseDir)) {
+      fs.mkdirSync(baseDir, { recursive: true });
+      logInfo(`Created base directory: ${baseDir}`);
+    }
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+      logInfo(`Created logs directory: ${logsDir}`);
+    }
 
     // Test connection before proceeding.
     const isConnected = await testSqlConnection(sqlConfig);
@@ -645,6 +648,14 @@ async function loadEventDescriptions(sqlConfig) {
       uniqueEvents.forEach(ev => {
         logInfo(`Prepared event: ${JSON.stringify(ev)}`);
       });
+      
+      // New: Check SQL connectivity before attempting upload.
+      const canConnect = await testSqlConnection(sqlConfig);
+      if (!canConnect) {
+        logError("SQL connection test failed during event processing. Caching events for next attempt.");
+        saveCachedEvents(uniqueEvents);
+        return;
+      }
       
       // Immediately attempt to upload events to SQL.
       const uploadSuccess = await uploadEventsToSQL(client_id, sqlConfig, uniqueEvents);
